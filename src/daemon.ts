@@ -101,6 +101,7 @@ import {
   executeScheduledTaskWithPrecondition,
   type ScheduledTaskPreconditionObservation,
 } from './services/schedule-precondition-gate.js';
+import { SchedulePreconditionError } from './services/schedule-precondition-runner.js';
 import {
   appendScheduleRunLog,
   type ScheduleRunOutcome,
@@ -138,6 +139,28 @@ import { entryNeedsContactResolve } from './setup/bot-config-editor.js';
 import { invalidWorkingDirs } from './utils/working-dir.js';
 import { validateWorkingDir } from './core/working-dir.js';
 import type { DaemonToWorker, LarkAttachment, LarkMessage } from './types.js';
+
+interface ScheduleRunLogErrorDetails {
+  errorCode: string;
+  error?: string;
+}
+
+function resolveScheduleRunLogErrorDetails(
+  precondition: ScheduledTaskPreconditionObservation['precondition'],
+  error: unknown,
+): ScheduleRunLogErrorDetails {
+  if (precondition !== 'error') {
+    return { errorCode: 'model_dispatch_error' };
+  }
+  return {
+    errorCode: error instanceof SchedulePreconditionError
+      ? error.code
+      : 'precondition_error',
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+export const __testOnly_resolveScheduleRunLogErrorDetails = resolveScheduleRunLogErrorDetails;
 
 function trustedCallerForTurn(
   larkAppId: string,
@@ -22807,7 +22830,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     };
     const appendExecutionLog = (
       outcome: ScheduleRunOutcome,
-      errorCode?: 'precondition_error' | 'model_dispatch_error',
+      errorDetails?: ScheduleRunLogErrorDetails,
     ): void => {
       const finishedAt = new Date().toISOString();
       try {
@@ -22821,7 +22844,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           finishedAt,
           durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(executionContext.startedAt)),
           additionalPrompt: precondition.additionalPrompt,
-          ...(errorCode ? { errorCode } : {}),
+          ...(errorDetails?.errorCode ? { errorCode: errorDetails.errorCode } : {}),
+          ...(errorDetails?.error !== undefined ? { error: errorDetails.error } : {}),
         }, effectiveAppId);
       } catch (error) {
         logger.warn(
@@ -22846,7 +22870,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     } catch (error) {
       appendExecutionLog(
         'error',
-        precondition.precondition === 'error' ? 'precondition_error' : 'model_dispatch_error',
+        resolveScheduleRunLogErrorDetails(precondition.precondition, error),
       );
       throw error;
     }

@@ -105,7 +105,12 @@ import { SchedulePreconditionError } from './services/schedule-precondition-runn
 import {
   appendScheduleRunLog,
   type ScheduleRunOutcome,
+  type ScheduleRunTargetResult,
 } from './services/schedule-run-log-store.js';
+import {
+  executeScheduledTaskForTargets,
+  ScheduleTargetExecutionError,
+} from './services/schedule-target-executor.js';
 import { migrateOverloadAlertAtStartup } from './services/overload-alert-migration.js';
 import * as messageQueue from './services/message-queue.js';
 import { emitHookEvent, emitHookEventLocal, HOOK_EVENTS, type HookEvent } from './services/hook-runner.js';
@@ -22824,6 +22829,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // missing larkAppId falls through to bot-0 as a legacy fallback).
   scheduler.setExecuteCallback(async (task, executionContext) => {
     const effectiveAppId = task.larkAppId ?? cfg.larkAppId;
+    let targetResults: ScheduleRunTargetResult[] | undefined;
     let precondition: ScheduledTaskPreconditionObservation = {
       precondition: 'none',
       additionalPrompt: false,
@@ -22846,6 +22852,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           additionalPrompt: precondition.additionalPrompt,
           ...(errorDetails?.errorCode ? { errorCode: errorDetails.errorCode } : {}),
           ...(errorDetails?.error !== undefined ? { error: errorDetails.error } : {}),
+          ...(targetResults !== undefined ? { targetResults } : {}),
         }, effectiveAppId);
       } catch (error) {
         logger.warn(
@@ -22859,10 +22866,30 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       const outcome = await executeScheduledTaskWithPrecondition(
         task,
         effectiveAppId,
-        (additionalPrompt) => withBotTurnAdmission(
-          effectiveAppId,
-          () => executeScheduledTask(task, activeSessions, refreshCliVersion, additionalPrompt),
-        ),
+        async (additionalPrompt) => {
+          const targetChatIds = scheduleStore.effectiveScheduleChatIds(task);
+          try {
+            const results = await executeScheduledTaskForTargets(
+              task,
+              targetChatIds,
+              targetTask => withBotTurnAdmission(
+                effectiveAppId,
+                () => executeScheduledTask(
+                  targetTask,
+                  activeSessions,
+                  refreshCliVersion,
+                  additionalPrompt,
+                ),
+              ),
+            );
+            if (targetChatIds.length > 1) targetResults = results;
+          } catch (error) {
+            if (error instanceof ScheduleTargetExecutionError) {
+              targetResults = error.targetResults;
+            }
+            throw error;
+          }
+        },
         undefined,
         observation => { precondition = observation; },
       );

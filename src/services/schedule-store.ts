@@ -241,6 +241,9 @@ function migrate(raw: any): ScheduledTask | null {
 
   return {
     id: raw.id,
+    preconditionRef: typeof raw.preconditionRef === 'string' && raw.preconditionRef
+      ? raw.preconditionRef
+      : undefined,
     name: raw.name,
     schedule: raw.schedule,
     parsed,
@@ -462,6 +465,7 @@ function load(appId?: string): void {
  */
 export function createTask(params: {
   id?: string;
+  preconditionRef?: string;
   name: string;
   schedule: string;
   parsed: ParsedSchedule;
@@ -517,6 +521,7 @@ export function createTask(params: {
     while (!params.id && working.has(id)) id = randomUUID().substring(0, 8);
     const task: ScheduledTask = {
       id,
+      preconditionRef: params.preconditionRef,
       name: params.name,
       schedule: params.schedule,
       parsed: params.parsed,
@@ -565,7 +570,7 @@ export function removeTask(id: string, appId?: string): boolean {
 export function updateTask(
   id: string,
   updates: Partial<Pick<ScheduledTask,
-    'enabled' | 'lastRunAt' | 'nextRunAt' | 'lastStatus' | 'lastError' | 'lastDeliveryError' | 'repeat' | 'rootMessageId' | 'scope' | 'executionPosition' | 'topicTitle' | 'chatType' | 'deliver' | 'name' | 'prompt' | 'schedule' | 'parsed' | 'silent' | 'workingDir'
+    'enabled' | 'lastRunAt' | 'nextRunAt' | 'lastStatus' | 'lastError' | 'lastDeliveryError' | 'repeat' | 'rootMessageId' | 'scope' | 'executionPosition' | 'topicTitle' | 'chatType' | 'deliver' | 'name' | 'prompt' | 'schedule' | 'parsed' | 'silent' | 'workingDir' | 'preconditionRef'
   >>,
   appId?: string,
 ): void {
@@ -733,9 +738,17 @@ export function startExternalWriteWatcher(): void {
         for (const [id, t] of state.tasks) {
           const prev = before.get(id);
           if (!prev) {
-            dashboardEventBus.publish({ type: 'schedule.created', body: { schedule: t } });
+            const { preconditionRef: _preconditionRef, ...schedule } = t;
+            dashboardEventBus.publish({
+              type: 'schedule.created',
+              body: { schedule: { ...schedule, hasPrecondition: !!t.preconditionRef } },
+            });
           } else if (JSON.stringify(prev) !== JSON.stringify(t)) {
-            dashboardEventBus.publish({ type: 'schedule.updated', body: { id, patch: t } });
+            const { preconditionRef: _preconditionRef, ...patch } = t;
+            dashboardEventBus.publish({
+              type: 'schedule.updated',
+              body: { id, patch: { ...patch, hasPrecondition: !!t.preconditionRef } },
+            });
           }
         }
         for (const id of before.keys()) {

@@ -22897,6 +22897,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
         observation => { precondition = observation; },
       );
       appendExecutionLog(outcome === 'executed' ? 'model_dispatched' : 'precondition_skipped');
+      return outcome;
     } catch (error) {
       appendExecutionLog(
         'error',

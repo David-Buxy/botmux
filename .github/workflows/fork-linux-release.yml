@@ -1,0 +1,91 @@
+name: Fork Linux Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'fork-v*'
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve build version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            case "${GITHUB_REF_NAME}" in
+              fork-v[0-9]*.[0-9]*.[0-9]*-*) ;;
+              *) echo "invalid fork release tag: ${GITHUB_REF_NAME}"; exit 1 ;;
+            esac
+            version="${GITHUB_REF_NAME#fork-v}"
+          else
+            version="0.0.0-fork.ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and smoke on the supported glibc 2.28 floor
+        run: |
+          scripts/build-linux-glibc-baseline.sh \
+            bun-linux-x64 dist-bin/botmux-linux-x64 \
+            "${{ steps.version.outputs.value }}"
+
+      - name: Generate and verify SHA-256
+        run: |
+          cd dist-bin
+          test -x botmux-linux-x64
+          sha256sum botmux-linux-x64 > botmux-linux-x64.sha256
+          sha256sum --check botmux-linux-x64.sha256
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-linux-x64-${{ steps.version.outputs.value }}
+          path: |
+            dist-bin/botmux-linux-x64
+            dist-bin/botmux-linux-x64.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-prerelease:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/fork-v')
+    needs: build-linux-x64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fork-linux-x64-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Reverify release payload
+        run: |
+          cd release-assets
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          test -f botmux-linux-x64
+          test -f botmux-linux-x64.sha256
+          sha256sum --check botmux-linux-x64.sha256
+
+      - name: Create public fork prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/botmux-linux-x64 \
+            release-assets/botmux-linux-x64.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Fork-only Linux x64 prerelease. Built and smoked on the upstream glibc 2.28 baseline."

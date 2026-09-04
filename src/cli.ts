@@ -58,6 +58,7 @@ import {
   autostartStatus,
   refreshAutostart,
 } from './autostart.js';
+import { parseAutostartEnableArgs } from './cli/autostart-args.js';
 import { tmuxEnv } from './setup/ensure-tmux.js';
 import { writeBotsJsonAtomic as writeBotsAtomic } from './setup/bots-store.js';
 import {
@@ -6086,7 +6087,8 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
                    同源 /preview/<sessionId>/ 访问，不暴露本机地址或任何 token。
                    端口必须由本会话的进程持有（在会话内直接启动，别 setsid/nohup
                    脱离进程树）；换代/关闭后需重新注册，远端 sandbox 后端不支持
-  autostart enable     注册开机自启（macOS launchd / Linux user systemd / Windows Task Scheduler，无需 sudo）
+  autostart enable [--now]
+                       注册开机自启；Linux 可显式 --now 立即由 user systemd 启动（无需 sudo）
   autostart disable    注销开机自启
   autostart status     查看自启状态
        unset             清除 worker 预算覆盖，恢复按机器 CPU/内存自动推导
@@ -14068,7 +14070,15 @@ switch (command) {
     ensureConfigDir();
     const sub = process.argv[3] ?? 'status';
     const opts = { pkgRoot: PKG_ROOT, configDir: CONFIG_DIR, logDir: LOG_DIR };
-    if (sub === 'enable' || sub === 'install') enableAutostart(opts);
+    if (sub === 'enable' || sub === 'install') {
+      try {
+        enableAutostart(opts, parseAutostartEnableArgs(process.argv.slice(4)));
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        console.error(`用法: botmux autostart enable [--now]`);
+        process.exit(1);
+      }
+    }
     else if (sub === 'disable' || sub === 'uninstall') disableAutostart(opts);
     else if (sub === 'status') autostartStatus(opts);
     else { console.error(`用法: botmux autostart <enable|disable|status>`); process.exit(1); }

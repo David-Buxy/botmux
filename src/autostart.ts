@@ -326,7 +326,18 @@ function lingerEnabled(): boolean {
   return r.stdout.toString().trim().endsWith('=yes');
 }
 
-function enableLinux(opts: AutostartOpts): void {
+export function systemdEnableArgs(startNow: boolean): string[] {
+  return startNow
+    ? ['--user', 'enable', '--now', SERVICE_NAME]
+    : ['--user', 'enable', SERVICE_NAME];
+}
+
+export function linuxInactiveServiceHint(enabled: string, active: string): string | null {
+  if (enabled !== 'enabled' || active === 'active') return null;
+  return `恢复命令: systemctl --user start ${SERVICE_NAME}`;
+}
+
+function enableLinux(opts: AutostartOpts, startNow: boolean): void {
   if (!userSystemdAvailable()) {
     console.error(`❌ 当前会话连不上 user systemd（缺少 DBus / 容器环境）。`);
     console.error(``);
@@ -349,18 +360,17 @@ function enableLinux(opts: AutostartOpts): void {
     process.exit(1);
   }
 
-  // No `--now` here on purpose: enable should only register the autostart hook,
-  // not interfere with whatever daemon state the user already has. Daemon
-  // lifecycle stays under `botmux start`/`stop`. The unit will trigger on next
-  // boot via WantedBy=default.target.
-  const en = spawnSync('systemctl', ['--user', 'enable', SERVICE_NAME], { stdio: 'pipe' });
+  // Preserve the historical registration-only behavior unless the operator
+  // explicitly opts into starting the freshly written unit with `--now`.
+  const en = spawnSync('systemctl', systemdEnableArgs(startNow), { stdio: 'pipe' });
   if (en.status !== 0) {
     console.error(`❌ systemctl --user enable 失败:`);
     console.error(en.stderr.toString());
     process.exit(1);
   }
   console.log(`✅ 已启用 ${SERVICE_NAME}`);
-  console.log(`   下次开机自动启动。立即启动: botmux start`);
+  if (startNow) console.log(`✅ 已通过 systemd 启动 ${SERVICE_NAME}`);
+  else console.log(`   下次开机自动启动。立即启动: botmux start`);
 
   if (!lingerEnabled()) {
     const username = userInfo().username;
@@ -407,8 +417,12 @@ function statusLinux(): void {
   }
   const isEnabled = spawnSync('systemctl', ['--user', 'is-enabled', SERVICE_NAME], { stdio: 'pipe' });
   const isActive = spawnSync('systemctl', ['--user', 'is-active', SERVICE_NAME], { stdio: 'pipe' });
-  console.log(`enabled: ${isEnabled.stdout.toString().trim() || isEnabled.stderr.toString().trim()}`);
-  console.log(`active: ${isActive.stdout.toString().trim() || isActive.stderr.toString().trim()}`);
+  const enabled = isEnabled.stdout.toString().trim() || isEnabled.stderr.toString().trim();
+  const active = isActive.stdout.toString().trim() || isActive.stderr.toString().trim();
+  console.log(`enabled: ${enabled}`);
+  console.log(`active: ${active}`);
+  const hint = linuxInactiveServiceHint(enabled, active);
+  if (hint) console.log(`⚠️  已启用但当前未运行。${hint}`);
   console.log(`Linger: ${lingerEnabled() ? 'yes' : 'no（登出后服务会停）'}`);
 }
 
@@ -588,10 +602,19 @@ export function inspectAutostart(): AutostartState {
   }
 }
 
-export function enableAutostart(opts: AutostartOpts): void {
+export interface EnableAutostartOptions {
+  startNow?: boolean;
+}
+
+export function enableAutostart(opts: AutostartOpts, options: EnableAutostartOptions = {}): void {
+  const startNow = options.startNow === true;
+  if (startNow && platform() !== 'linux') {
+    console.error(`❌ --now 目前仅支持 Linux user systemd。`);
+    process.exit(1);
+  }
   switch (platform()) {
     case 'macos': return enableMac(opts);
-    case 'linux': return enableLinux(opts);
+    case 'linux': return enableLinux(opts, startNow);
     case 'windows': return enableWindows(opts);
     default:
       console.error(`❌ 当前平台 ${process.platform} 暂不支持 botmux autostart。`);
